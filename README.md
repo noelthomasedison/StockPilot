@@ -1,0 +1,374 @@
+# StockPilot 
+> An AI-powered stock research assistant — ask natural-language questions, get structured, data-driven answers.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Motivation](#motivation)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Tools](#tools)
+- [Modes](#modes)
+- [Fast Path vs Agent Path](#fast-path-vs-agent-path)
+- [Free-Tier Design](#free-tier-design)
+- [Prompting Strategy](#prompting-strategy)
+- [Caching](#caching)
+- [UI Features](#ui-features)
+- [Example Queries](#example-queries)
+- [Installation](#installation)
+- [Environment Variables](#environment-variables)
+- [Running the App](#running-the-app)
+- [Phase 1 Status](#phase-1-status)
+- [Known Limitations](#known-limitations)
+- [Roadmap](#roadmap)
+
+---
+
+## Overview
+
+StockPilot is a hybrid AI agent system for stock research. It combines **deterministic routing** for simple queries with a **LangGraph-based agent** for more complex, multi-tool reasoning — all wrapped in a lightweight Streamlit UI.
+
+The project was inspired by a LangChain and LangGraph workshop conducted by PwC, exploring how LLM agents can reason over tools rather than answering from static text.
+
+Phase 1 focuses on building a working hybrid agent under free-tier API constraints, with clear separation between fast deterministic execution and agent-based reasoning.
+
+---
+
+## Motivation
+
+Checking a stock typically means jumping between multiple sources for price, performance, comparisons, and news. StockPilot unifies that into a single natural-language interface:
+
+```
+AAPL price
+AAPL performance this month
+Compare AAPL and TSLA
+Latest news about Apple
+AAPL performance this month and latest news
+```
+
+Rather than hardcoding all logic, StockPilot explores how a hybrid AI system decides when to route directly to a tool, invoke an agent, or synthesize multiple tool outputs.
+
+---
+
+## Architecture
+
+### High-Level Flow
+
+```
+User Query
+   ↓
+Intent Detection
+   ↓
+┌──────────────────────────────┬──────────────────────────────┐
+│ Fast Path                    │ Agent Path                   │
+│ (single-tool deterministic)  │ (LangGraph reasoning)        │
+└──────────────────────────────┴──────────────────────────────┘
+   ↓                                  ↓
+Tool Call(s)                      Tool Selection + Tool Calls
+   ↓                                  ↓
+Response Formatting               Final LLM Synthesis
+   ↓                                  ↓
+Streamlit UI                      Streamlit UI
+```
+
+### Key Design Idea
+
+**Fast Path** — For simple, structured queries, a deterministic router detects intent and calls exactly one tool with no LLM involved.
+
+**Agent Path** — For complex or ambiguous queries, a LangGraph-based agent interprets the request, selects tools, executes up to 2 calls (in free-tier mode), and synthesizes a final natural-language answer.
+
+---
+
+## Project Structure
+
+```
+StockPilot/
+│
+├── agent/
+│   ├── __init__.py
+│   ├── tools.py          # Tool definitions
+│   ├── prompts.py        # System prompts (free & pro)
+│   ├── state.py          # LangGraph state
+│   ├── preparser.py      # Deterministic intent detector
+│   ├── formatters.py     # Tool output formatters
+│   ├── graph_free.py     # Free-tier LangGraph agent (2-tool cap)
+│   ├── graph_pro.py      # Pro-mode LangGraph agent
+│   └── graph_free_retired.py  # Legacy reference graph
+│
+├── services/
+│   ├── market_data.py    # yfinance data retrieval + caching
+│   ├── news_service.py   # RSS news fetching + caching
+│   ├── analytics.py      # Return, volatility, max drawdown
+│   └── cache.py          # Local cache layer
+│
+├── app.py                # Streamlit application
+├── config.py             # Env config loader
+├── requirements.txt
+├── .env
+├── .gitignore
+└── README.md
+```
+
+---
+
+## Tools
+
+StockPilot Phase 1 includes four tools:
+
+| Tool | Description | Example Query |
+|---|---|---|
+| `get_stock_price` | Latest price, daily change, daily % change, currency | `AAPL price` |
+| `get_stock_summary` | Start/end price, high, low, avg close, return %, volatility %, max drawdown % | `AAPL performance this month` |
+| `compare_stocks` | Side-by-side comparison: price, return %, volatility %, max drawdown % | `Compare AAPL and TSLA` |
+| `get_stock_news` | Recent headlines for a ticker or query | `Latest news about Apple` |
+
+---
+
+## Modes
+
+### Free Mode
+Designed for free-tier Groq usage.
+
+- Deterministic fast path can be enabled
+- Falls back to `graph_free.py` when intent is unclear
+- Agent capped at **2 tool calls**
+- Final synthesis still generated by LLM
+- Best for: low cost, rate limit safety, stable testing
+
+### Pro Mode
+Uses `graph_pro.py`.
+
+- More agentic, richer LangGraph orchestration
+- Less constrained than free mode
+- Best for: complex workflows, future expansion
+
+---
+
+## Fast Path vs Agent Path
+
+### Fast Path
+A deterministic route for simple queries — **no LangGraph, no Groq call**.
+
+- Exactly one tool called
+- Fast and cheap
+- Triggered by clear single-intent queries
+
+```
+AAPL price → detect_intent → get_stock_price → formatted response
+```
+
+### Agent Path
+Used when fast path is disabled, intent is ambiguous, or multiple tools are needed.
+
+- LangGraph orchestrates tool selection
+- Groq LLM called for reasoning and synthesis
+- Final answer synthesized after tool execution
+
+```
+Compare AAPL and TSLA and give news
+  → assistant → compare_stocks → assistant → get_stock_news → final_assistant
+```
+
+---
+
+## Free-Tier Design
+
+Making LangGraph work reliably under free-tier API constraints required several deliberate design decisions:
+
+- **Fast path** handles all simple single-intent queries without touching the LLM
+- **Agent graph capped at 2 tool calls** to avoid runaway token usage
+- **Short message history** keeps context windows lean
+- **Local caching** reduces repeated network and API calls
+- **Malformed tool-call recovery** — Groq's `llama-3.3-70b-versatile` occasionally produces XML-style `<function=...>` formatting instead of valid tool calls; a regex-based recovery layer handles this gracefully
+
+### Model
+
+```
+llama-3.3-70b-versatile  (via Groq API)
+```
+
+Chosen for strong reasoning quality, fast inference, and reliable tool-use performance at free-tier scale.
+
+---
+
+## Prompting Strategy
+
+Two system prompts are maintained:
+
+**`SYSTEM_PROMPT_FREE`** — optimized for:
+- Free-tier constraints
+- Minimum tool usage
+- Sequential (not parallel) tool calls
+- Concise output
+
+**`SYSTEM_PROMPT_PRO`** — optimized for:
+- Richer multi-tool behavior
+- More complete structured answers
+
+Both prompts enforce:
+- Sequential tool calls (not parallel)
+- Tool results are not echoed as plain text
+- Multi-intent queries must complete all requested tasks before answering
+
+---
+
+## Caching
+
+Phase 1 uses local caching to reduce latency and limit redundant network calls.
+
+Cached data includes:
+- Stock quotes
+- Historical OHLCV data
+- News results
+
+Benefits: faster responses, consistent results within a session, and reduced pressure on free-tier rate limits.
+
+---
+
+## UI Features
+
+The Streamlit UI includes:
+
+- Chat-style interaction
+- Mode switching (free / pro)
+- Max history control
+- Fast path toggle
+- Debug tool trace toggle
+- **Plan tab** showing:
+  - Query
+  - Selected path (fast / agent)
+  - Detected plan
+  - Tools called
+
+---
+
+## Example Queries
+
+### Fast Path
+```
+AAPL price
+AAPL performance this month
+Compare AAPL and TSLA
+Latest news about Apple
+```
+
+### Agent Path
+```
+AAPL performance this month and latest news
+Compare AAPL and TSLA and give news
+What should I know about Apple lately?
+```
+
+---
+
+## Installation
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/<your-username>/StockPilot.git
+cd StockPilot
+```
+
+### 2. Create a virtual environment
+
+**macOS / Linux**
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+**Windows**
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### 3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+
+STOCKPILOT_MODE=free
+MAX_HISTORY_MESSAGES=6
+ENABLE_PREPARSER=true
+PREPARSER_IN_PRO=false
+```
+
+| Variable | Description |
+|---|---|
+| `GROQ_API_KEY` | Your Groq API key |
+| `GROQ_MODEL` | Groq model to use |
+| `STOCKPILOT_MODE` | `free` or `pro` |
+| `MAX_HISTORY_MESSAGES` | Max messages retained for graph input |
+| `ENABLE_PREPARSER` | Enables the deterministic fast path |
+| `PREPARSER_IN_PRO` | Allows fast path in pro mode if `true` |
+
+---
+
+## Running the App
+
+```bash
+streamlit run app.py
+```
+
+Then open the local URL shown in the terminal:
+
+```
+http://localhost:8501
+```
+
+---
+
+## Phase 1 Status
+
+### Completed
+
+- Stock price retrieval
+- Stock performance summary
+- Stock comparison
+- Stock news retrieval
+- LangGraph integration with sequential tool-calling
+- Free-tier 2-tool capped agent graph with final synthesis step
+- Deterministic fast path (preparser)
+- Local caching layer
+- Token-aware agent design
+- Streamlit chat UI with settings panel and plan/debug view
+
+---
+
+## Known Limitations
+
+- Free-tier model intermittently produces malformed tool calls (mitigated by recovery layer)
+- Some multi-intent queries still benefit from stronger deterministic routing
+- `compare + news` combinations can be less reliable than simpler query types
+- No conversational memory across sessions
+- No portfolio-level analysis
+
+---
+
+## Roadmap
+
+Potential directions for Phase 2 and beyond:
+
+- Conversational memory and follow-up query understanding
+- Deterministic multi-intent planner
+- Portfolio analytics
+- Richer charts and visualizations
+- Stronger caching and retry logic
+- Improved source display for news and metrics
+
+---
+
+> **Phase 1** — architecture, tool integration, free-tier-safe agent design, UI and workflow testing.
