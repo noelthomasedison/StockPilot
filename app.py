@@ -126,7 +126,7 @@ def handle_user_text(user_text: str) -> None:
                 res = get_stock_price.invoke({"ticker": detected_plan["ticker"]})
                 tools_called.append("get_stock_price")
                 st.session_state.messages.append(
-                    AIMessage(content="⚡ Fast path (pre-parser)\n\n" + format_price(res))
+                    AIMessage(content="⚡ Fast path  \n\n" + format_price(res))
                 )
 
             elif detected_plan["intent"] == "summary":
@@ -135,7 +135,7 @@ def handle_user_text(user_text: str) -> None:
                 )
                 tools_called.append("get_stock_summary")
                 st.session_state.messages.append(
-                    AIMessage(content="⚡ Fast path (pre-parser)\n\n" + format_summary(res))
+                    AIMessage(content="⚡ Fast path  \n\n" + format_summary(res))
                 )
 
             elif detected_plan["intent"] == "compare":
@@ -148,14 +148,14 @@ def handle_user_text(user_text: str) -> None:
                 )
                 tools_called.append("compare_stocks")
                 st.session_state.messages.append(
-                    AIMessage(content="⚡ Fast path (pre-parser)\n\n" + format_compare(res))
+                    AIMessage(content="⚡ Fast path  \n\n" + format_compare(res))
                 )
 
             elif detected_plan["intent"] == "news":
                 res = get_stock_news.invoke({"ticker_or_query": detected_plan["query"]})
                 tools_called.append("get_stock_news")
                 st.session_state.messages.append(
-                    AIMessage(content="⚡ Fast path (pre-parser)\n\n" + format_news(res))
+                    AIMessage(content="⚡ Fast path  \n\n" + format_news(res))
                 )
 
             else:
